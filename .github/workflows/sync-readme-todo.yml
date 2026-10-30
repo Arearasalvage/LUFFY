@@ -1,0 +1,118 @@
+name: Sync README TODO list (temporary)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - name: Rewrite Complete TODO List from dev code
+        run: |
+          python3 - <<'PY'
+          import subprocess, re, os, json
+          def sh(cmd):
+              r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+              return r.returncode, r.stdout.strip(), r.stderr.strip()
+          sh("git rev-parse --verify origin/main >/dev/null 2>&1 || git fetch origin main:refs/remotes/origin/main --depth=1")
+          rc, out, err = sh("git diff --name-only origin/main...HEAD -- '*.py'")
+          changed = [x for x in out.splitlines() if x.endswith('.py')]
+          print("CHANGED_PY=" + json.dumps(changed))
+          EXPECTED = {
+            "luffy/deepscaler/utils.py": [
+              [45, "Add logging for API calls and errors"],
+              [46, "Support batch processing for multiple prompts"],
+              [47, "Add timeout configuration for API calls"],
+              [107, "Implement Vertex AI initialization and authentication"],
+              [108, "Configure safety settings for content generation"],
+              [109, "Set up GenerativeModel with proper system instructions"],
+              [110, "Implement retry logic with exponential backoff"],
+              [111, "Add comprehensive error handling for API access issues"],
+              [112, "Handle rate limiting and quota management"],
+              [113, "Implement response validation and text extraction"],
+              [114, "Add support for different generation configurations"]
+            ],
+            "luffy/verl/verl/protocol.py": [
+              [114, "Optimize memory usage during tensor reshaping"],
+              [115, "Add support for different tensor types and shapes"],
+              [136, "Optimize tensor view operations for performance"],
+              [137, "Add error handling for invalid batch dimensions"],
+              [169, "(zhangchi.usc1992) add consistency check"],
+              [265, "we can actually lift this restriction if needed"],
+              [351, "(zhangchi.usc1992) whether to copy"]
+            ]
+          }
+          todo_re = re.compile(r"#\s*TODO\b\s*(?:\((?P<who>[^)]*)\)\s*:?\s*)?:?(?P<body>.*)$")
+          scanned = {}
+          for path in changed:
+              if not os.path.exists(path):
+                  continue
+              items = []
+              with open(path, encoding="utf-8") as fh:
+                  for i, line in enumerate(fh, 1):
+                      idx = line.find("#")
+                      if idx < 0:
+                          continue
+                      m = todo_re.search(line[idx:].rstrip("\n"))
+                      if not m:
+                          continue
+                      who = (m.group("who") or "").strip()
+                      body = (m.group("body") or "").strip().lstrip(":").strip()
+                      text = ("(%s) %s" % (who, body)).strip() if who else body
+                      items.append([path, i, text])
+              scanned[path] = items
+          print("SCANNED=" + json.dumps(scanned))
+          rm = "README.md"
+          text = open(rm, encoding="utf-8").read()
+          heading = "### \U0001F4DD Complete TODO List"
+          assert heading in text, "section title missing"
+          h = text.index(heading)
+          le = text.index("\n", h) + 1
+          se = text.index("\n## ", le)
+          prefix, section, suffix = text[:le], text[le:se], text[se:]
+          entry_re = re.compile(r"^- \[ \] \*\*(?P<path>.+?):(?P<line>\d+)\*\* - (?P<text>.*)$")
+          rows = []
+          for raw in section.splitlines():
+              m = entry_re.match(raw)
+              if m:
+                  rows.append((m.group("path"), int(m.group("line")), raw))
+          exp_paths = set(EXPECTED)
+          kept = [(p, l, raw) for (p, l, raw) in rows if p not in exp_paths]
+          newrows = list(kept)
+          for p, items in EXPECTED.items():
+              for ln, txt in items:
+                  newrows.append((p, ln, "- [ ] **%s:%d** - %s" % (p, ln, txt)))
+          newrows.sort(key=lambda r: (r[0], r[1]))
+          from collections import defaultdict
+          dd = defaultdict(list)
+          for p, l, _ in newrows:
+              dd[p].append(l)
+          for p, ls in dd.items():
+              assert ls == sorted(ls), p
+          new_section = "\n" + "\n".join(raw for _, _, raw in newrows) + "\n"
+          new_text = prefix + new_section + suffix
+          assert heading in new_text
+          if new_text != text:
+              open(rm, "w", encoding="utf-8").write(new_text)
+              print("UPDATED entries=%d" % len(newrows))
+          else:
+              print("NOCHANGE entries=%d" % len(newrows))
+          PY
+      - name: Commit and push README update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          if git diff --staged --quiet; then
+            echo "No README changes to commit"
+          else
+            git commit -m "docs(readme): sync Complete TODO List with dev code"
+            git push origin HEAD:dev
+          fi
